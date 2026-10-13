@@ -38,8 +38,8 @@ export function documentBreadcrumbParts(
   let collectionLabel: string | undefined;
   if (document.isCollectionDeleted) {
     collectionLabel = t("Deleted Collection");
-  } else if (document.collection?.name) {
-    collectionLabel = document.collection.name;
+  } else if (document.collection?.displayName) {
+    collectionLabel = document.collection.displayName;
   }
 
   return {
@@ -83,12 +83,16 @@ type Props = {
    * ancestors are shown. If less than or equal to 0, no items are shown.
    */
   maxDepth?: number;
+  ref?: React.Ref<HTMLDivElement>;
 };
 
-function DocumentBreadcrumb(
-  { document, children, onlyText, maxDepth }: Props,
-  ref: React.RefObject<HTMLDivElement> | null
-) {
+function DocumentBreadcrumb({
+  document,
+  children,
+  onlyText,
+  maxDepth,
+  ref,
+}: Props) {
   const { collections } = useStores();
   const { t } = useTranslation();
   const sidebarContext = useLocationSidebarContext();
@@ -135,12 +139,14 @@ function DocumentBreadcrumb(
         ) : undefined,
         section: ActiveDocumentSection,
         visible: !!(collection && can.readDocument),
-        to: collection
-          ? {
-              pathname: collection.path,
-              state: { sidebarContext },
-            }
-          : "",
+        // A personal collection has no page to link to.
+        to:
+          collection && !collection.isPersonal
+            ? {
+                pathname: collection.path,
+                state: { sidebarContext },
+              }
+            : "",
       }),
       createInternalLinkAction({
         name: t("Deleted Collection"),
@@ -258,7 +264,7 @@ const CollectionName = observer(function CollectionName_({
       <ContextMenu action={menuAction} ariaLabel={t("Collection options")}>
         <Name>
           {icon}
-          <NameText>{collection.name}</NameText>
+          <NameText>{collection.displayName}</NameText>
         </Name>
       </ContextMenu>
     </ActionContextProvider>
@@ -334,4 +340,4 @@ const SmallSlash = styled(GoToIcon)`
   opacity: 0.5;
 `;
 
-export default observer(React.forwardRef(DocumentBreadcrumb));
+export default observer(DocumentBreadcrumb);

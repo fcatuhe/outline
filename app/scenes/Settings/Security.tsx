@@ -6,6 +6,7 @@ import * as React from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { toast } from "sonner";
 import { errToString } from "@shared/utils/error";
+import type { TeamPreferences, UserRole } from "@shared/types";
 import { CommentingAccess, TeamPreference, EmailDisplay } from "@shared/types";
 import ConfirmationDialog from "~/components/ConfirmationDialog";
 import Heading from "~/components/Heading";
@@ -103,7 +104,9 @@ function Security() {
   );
 
   const saveData = React.useCallback(
-    async (newData) => {
+    async (
+      newData: Partial<typeof data> & { preferences?: TeamPreferences }
+    ) => {
       try {
         setData((prev) => ({ ...prev, ...newData }));
         await team.save(newData);
@@ -117,7 +120,7 @@ function Security() {
 
   const handleDefaultRoleChange = React.useCallback(
     async (newDefaultRole: string) => {
-      await saveData({ defaultUserRole: newDefaultRole });
+      await saveData({ defaultUserRole: newDefaultRole as UserRole });
     },
     [saveData]
   );
@@ -161,6 +164,17 @@ function Security() {
     [saveData, team.preferences]
   );
 
+  const handlePersonalDocsChange = React.useCallback(
+    async (checked: boolean) => {
+      const preferences = {
+        ...team.preferences,
+        [TeamPreference.PersonalDocs]: checked,
+      };
+      await saveData({ preferences });
+    },
+    [saveData, team.preferences]
+  );
+
   const handleViewersCanExportChange = React.useCallback(
     async (checked: boolean) => {
       const preferences = {
@@ -187,7 +201,7 @@ function Security() {
     async (emailDisplay: string) => {
       const preferences = {
         ...team.preferences,
-        [TeamPreference.EmailDisplay]: emailDisplay,
+        [TeamPreference.EmailDisplay]: emailDisplay as EmailDisplay,
       };
       await saveData({ preferences });
     },
@@ -198,7 +212,7 @@ function Security() {
     async (commenting: string) => {
       const preferences = {
         ...team.preferences,
-        [TeamPreference.Commenting]: commenting,
+        [TeamPreference.Commenting]: commenting as CommentingAccess,
       };
       await saveData({ preferences });
     },
@@ -384,6 +398,19 @@ function Security() {
           label={t("Commenting")}
           labelHidden
           short
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("Personal documents")}
+        name={TeamPreference.PersonalDocs}
+        description={t(
+          "Allow editors to create personal documents that are only visible to themselves and the people they share them with"
+        )}
+      >
+        <Switch
+          id={TeamPreference.PersonalDocs}
+          checked={team.getPreference(TeamPreference.PersonalDocs)}
+          onChange={handlePersonalDocsChange}
         />
       </SettingRow>
       <SettingRow
