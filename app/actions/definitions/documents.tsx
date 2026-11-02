@@ -7,7 +7,6 @@ import {
   StarredIcon,
   PrintIcon,
   UnstarredIcon,
-  DocumentIcon,
   NewDocumentIcon,
   ShapesIcon,
   ImportIcon,
@@ -62,6 +61,7 @@ import DocumentPublish from "~/scenes/DocumentPublish";
 import DeleteDocumentsInTrash from "~/scenes/Trash/components/DeleteDocumentsInTrash";
 import ConfirmationDialog from "~/components/ConfirmationDialog";
 import { DialogTitle } from "~/components/DialogTitle";
+import { DocumentArchiveDialog } from "~/components/DocumentArchiveDialog";
 import DocumentCopy from "~/components/DocumentExplorer/DocumentCopy";
 import MarkdownIcon from "~/components/Icons/MarkdownIcon";
 import { ImportDocumentDialog } from "~/components/ImportDocumentDialog";
@@ -111,13 +111,15 @@ import type {
   ActionGroup,
   ActionSeparator as TActionSeparator,
 } from "~/types";
-import lazyWithRetry from "~/utils/lazyWithRetry";
+import lazyWithRetry from "@shared/utils/lazyWithRetry";
 import env from "~/env";
 import { isMac, isWindows } from "@shared/utils/browser";
 import isCloudHosted from "~/utils/isCloudHosted";
 import DocumentMove from "~/components/DocumentExplorer/DocumentMove";
+import { DocumentIcon } from "~/components/Icons/DocumentIcon";
 
-const Insights = lazyWithRetry(
+/** Lazy insights dialog, exported so that triggers can preload it. */
+export const Insights = lazyWithRetry(
   () => import("~/scenes/Document/components/Insights")
 );
 const SharePopover = lazyWithRetry(
@@ -150,10 +152,11 @@ export const openDocument = createActionWithChildren({
       .filter((item) => !recentIds.has(item.id))
       .map((item) => {
         const document = stores.documents.get(item.id);
+        const path = item instanceof Document ? item.path : item.url;
         return createInternalLinkAction({
-          // Note: using url which includes the slug rather than id here to bust
+          // Note: using path which includes the slug rather than id here to bust
           // cache if the document is renamed
-          id: item.url,
+          id: path,
           name: item.title,
           description: document
             ? documentBreadcrumbText(document, t)
@@ -165,10 +168,10 @@ export const openDocument = createActionWithChildren({
               color={item.color ?? undefined}
             />
           ) : (
-            <DocumentIcon outline={item.isDraft} />
+            <DocumentIcon empty={document?.isEmpty} />
           ),
           section: DocumentSection,
-          to: item.url,
+          to: path,
         });
       });
   },
@@ -490,7 +493,7 @@ export const starDocument = createAction({
       (document) => document.star(),
       (documents, succeeded, t) =>
         documents.length > 1
-          ? t("{{ count }} documents starred", { count: succeeded })
+          ? t("{{ count }} document starred", { count: succeeded })
           : undefined
     );
     setPersistedState(getHeaderExpandedKey("starred"), true);
@@ -518,7 +521,7 @@ export const unstarDocument = createAction({
       (document) => document.unstar(),
       (documents, succeeded, t) =>
         documents.length > 1
-          ? t("{{ count }} documents unstarred", { count: succeeded })
+          ? t("{{ count }} document unstarred", { count: succeeded })
           : undefined
     ),
 });
@@ -586,7 +589,7 @@ export const unpublishDocument = createAction({
           ? t("Unpublished {{ documentName }}", {
               documentName: documents[0].noun,
             })
-          : t("{{ count }} documents unpublished", { count: succeeded })
+          : t("{{ count }} document unpublished", { count: succeeded })
     ),
 });
 
@@ -719,10 +722,17 @@ export const shareDocument = createAction({
   },
 });
 
+/** Shows a file extension at the end of menu items only. */
+const fileExtensionHint =
+  (extension: string) =>
+  ({ isMenu }: ActionContext) =>
+    isMenu ? extension : undefined;
+
 export const downloadDocumentAsMarkdown = createAction({
   name: ({ t, isMenu }) => (isMenu ? t("Markdown") : t("Download as Markdown")),
   analyticsName: "Download document as Markdown",
   section: ActiveDocumentSection,
+  badge: fileExtensionHint(".md"),
   keywords: "md markdown export download",
   icon: <MarkdownIcon />,
   iconInContextMenu: false,
@@ -744,6 +754,7 @@ export const downloadDocumentAsHTML = createAction({
   name: ({ t, isMenu }) => (isMenu ? t("HTML") : t("Download as HTML")),
   analyticsName: "Download document as HTML",
   section: ActiveDocumentSection,
+  badge: fileExtensionHint(".html"),
   keywords: "xml html export download",
   icon: <CodeIcon />,
   iconInContextMenu: false,
@@ -766,6 +777,7 @@ export const downloadDocumentAsTextBundle = createAction({
     isMenu ? t("TextBundle") : t("Download as TextBundle"),
   analyticsName: "Download document as TextBundle",
   section: ActiveDocumentSection,
+  badge: fileExtensionHint(".textpack"),
   keywords: "textbundle textpack bear ulysses export download",
   icon: <ArchiveIcon />,
   iconInContextMenu: false,
@@ -787,6 +799,7 @@ export const downloadDocumentAsPDF = createAction({
   name: ({ t, isMenu }) => (isMenu ? t("PDF") : t("Download as PDF")),
   analyticsName: "Download document as PDF",
   section: ActiveDocumentSection,
+  badge: fileExtensionHint(".pdf"),
   keywords: "pdf export download",
   icon: <PDFIcon />,
   iconInContextMenu: false,
@@ -975,7 +988,7 @@ export const pinDocumentToCollection = createAction({
       (documents, succeeded, t) =>
         documents.length === 1
           ? t("Pinned to collection")
-          : t("{{ count }} documents pinned", { count: succeeded })
+          : t("{{ count }} document pinned", { count: succeeded })
     ),
 });
 
@@ -1036,7 +1049,7 @@ export const unpinDocument = createAction({
       (documents, succeeded, t) =>
         documents.length === 1
           ? t("Unpinned")
-          : t("{{ count }} documents unpinned", { count: succeeded })
+          : t("{{ count }} document unpinned", { count: succeeded })
     ),
 });
 
@@ -1150,6 +1163,7 @@ export const printDocument = createAction({
   name: ({ t, isMenu }) => (isMenu ? t("Print") : t("Print document")),
   analyticsName: "Print document",
   section: ActiveDocumentSection,
+  shortcut: ["Meta+P"],
   icon: <PrintIcon />,
   iconInContextMenu: false,
   visible: ({ activeDocumentId }) => !!(activeDocumentId && window.print),
@@ -1358,13 +1372,14 @@ export const searchDocumentsForQueryActionFactory = (query: string) =>
   createInternalLinkAction({
     id: "search",
     name: ({ t }) =>
-      t(`Search documents for "{{searchQuery}}"`, { searchQuery: query }),
+      t("Search documents for “{{ searchQuery }}”", { searchQuery: query }),
     analyticsName: "Search documents",
     section: SearchResultsSection,
     priority: -1,
     icon: <SearchIcon />,
     to: searchPath({ query }),
-    visible: ({ location }) => location.pathname !== searchPath(),
+    visible: ({ location, isMCP }) =>
+      !isMCP && location.pathname !== searchPath(),
   });
 
 export const moveDocumentToCollection = createAction({
@@ -1373,31 +1388,32 @@ export const moveDocumentToCollection = createAction({
   section: ActiveDocumentSection,
   icon: <MoveIcon />,
   iconInContextMenu: false,
-  visible: ({ activeDocumentId, stores }) => {
-    if (!activeDocumentId) {
-      return false;
+  visible: (context) =>
+    everyActiveModel(
+      context,
+      Document,
+      (document) => !!context.stores.policies.abilities(document.id).move
+    ),
+  perform: ({ getActiveModels, stores, t }) => {
+    const documents = getActiveModels(Document);
+    if (!documents.length) {
+      return;
     }
-    return !!stores.policies.abilities(activeDocumentId).move;
-  },
-  perform: ({ activeDocumentId, stores, t }) => {
-    if (activeDocumentId) {
-      const document = stores.documents.get(activeDocumentId);
-      if (!document) {
-        return;
-      }
 
-      stores.dialogs.openModal({
-        title: (
+    stores.dialogs.openModal({
+      title:
+        documents.length === 1 ? (
           <DialogTitle
             title={t("Move {{ documentType }}", {
-              documentType: document.noun,
+              documentType: documents[0].noun,
             })}
-            model={document}
+            model={documents[0]}
           />
+        ) : (
+          t("Move {{ count }} document", { count: documents.length })
         ),
-        content: <DocumentMove document={document} />,
-      });
-    }
+      content: <DocumentMove documents={documents} />,
+    });
   },
 });
 
@@ -1406,16 +1422,7 @@ export const moveDocument = createAction({
   analyticsName: "Move document",
   section: ActiveDocumentSection,
   icon: <MoveIcon />,
-  visible: ({ activeDocumentId, stores }) => {
-    if (!activeDocumentId) {
-      return false;
-    }
-    const document = stores.documents.get(activeDocumentId);
-    if (!document) {
-      return false;
-    }
-    return !!stores.policies.abilities(activeDocumentId).move;
-  },
+  visible: moveDocumentToCollection.visible,
   perform: moveDocumentToCollection.perform,
 });
 
@@ -1449,29 +1456,21 @@ export const archiveDocument = createAction({
           })
         ),
       content: (
-        <ConfirmationDialog
-          onSubmit={async () => {
+        <DocumentArchiveDialog
+          count={documents.length}
+          onSubmit={async (reason) => {
             const succeeded = await performBatch(documents, (document) =>
-              document.archive()
+              document.archive({ reason })
             );
             if (succeeded) {
               toast.success(
                 documents.length === 1
                   ? t("Document archived")
-                  : t("{{ count }} documents archived", { count: succeeded })
+                  : t("{{ count }} document archived", { count: succeeded })
               );
             }
           }}
-          savingText={`${t("Archiving")}…`}
-        >
-          {documents.length === 1
-            ? t(
-                "Archiving this document will remove it from the collection and search results."
-              )
-            : t(
-                "Archiving these documents will remove them from their collections and search results."
-              )}
-        </ConfirmationDialog>
+        />
       ),
     });
   },
@@ -1500,7 +1499,7 @@ export const restoreDocument = createAction({
           ? t("{{ documentName }} restored", {
               documentName: capitalize(documents[0].noun),
             })
-          : t("{{ count }} documents restored", { count: succeeded })
+          : t("{{ count }} document restored", { count: succeeded })
     ),
 });
 
@@ -1537,7 +1536,7 @@ export const restoreDocumentToCollection = createActionWithChildren({
     const actions = collections.orderedData.map((collection) => {
       const can = policies.abilities(collection.id);
       return createAction({
-        name: collection.name,
+        name: collection.displayName,
         section: ActiveDocumentSection,
         icon: <CollectionIcon collection={collection} />,
         visible: can.createDocument,
@@ -1610,7 +1609,7 @@ export const deleteDocument = createAction({
             );
             if (succeeded) {
               toast.success(
-                t("{{ count }} documents moved to trash", { count: succeeded })
+                t("{{ count }} document moved to trash", { count: succeeded })
               );
             }
           }}
@@ -1816,12 +1815,9 @@ const headingPrefixNames: Record<HeadingPrefixStyle, (t: TFunction) => string> =
 const changeHeadingPrefixFactory = (style: HeadingPrefixStyle) =>
   createAction({
     name: ({ t }) => headingPrefixNames[style](t),
-    // The example is displayed in the shortcut slot of menu items, but must
-    // not be set on the command bar action where shortcuts are registered as
-    // key sequences.
-    shortcut: ({ isMenu }) =>
+    badge: ({ isMenu }) =>
       isMenu && headingPrefixExamples[style]
-        ? [headingPrefixExamples[style]]
+        ? headingPrefixExamples[style]
         : undefined,
     keywords: headingPrefixExamples[style],
     analyticsName: "Change heading numbering",

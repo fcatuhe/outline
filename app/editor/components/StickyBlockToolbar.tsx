@@ -17,6 +17,14 @@ type Props = {
   items: MenuItem[];
   /** Whether the text direction is right-to-left. */
   rtl: boolean;
+  /** Ref to the track element. */
+  ref?: React.RefObject<HTMLDivElement | null>;
+  /** The block element to track, defaults to the block holding the selection. */
+  element?: HTMLElement | null;
+  /** Called when the pointer enters the toolbar. */
+  onMouseEnter?: React.MouseEventHandler<HTMLDivElement>;
+  /** Called when the pointer leaves the toolbar. */
+  onMouseLeave?: React.MouseEventHandler<HTMLDivElement>;
 };
 
 type TrackRect = {
@@ -77,14 +85,17 @@ function sameRect(a: TrackRect | null, b: TrackRect | null) {
  * it visible without any scroll listener and releases it when the block leaves
  * the viewport.
  *
- * @param items - the menu items to render.
- * @param rtl - whether the document is right-to-left.
+ * @param props - the component props.
  * @returns the sticky block toolbar.
  */
-const StickyBlockToolbar = React.forwardRef(function StickyBlockToolbar_(
-  { items, rtl }: Props,
-  ref: React.RefObject<HTMLDivElement>
-) {
+function StickyBlockToolbar({
+  items,
+  rtl,
+  ref,
+  onMouseEnter,
+  onMouseLeave,
+  ...props
+}: Props) {
   const { view } = useEditor();
   const trackRef = ref || React.createRef<HTMLDivElement>();
   const [rect, setRect] = React.useState<TrackRect | null>(null);
@@ -93,7 +104,8 @@ const StickyBlockToolbar = React.forwardRef(function StickyBlockToolbar_(
   // Re-measure when the window resizes; scroll is handled by `position: sticky`.
   useWindowSize();
 
-  const element = getBlockElement(view);
+  const element =
+    props.element === undefined ? getBlockElement(view) : props.element;
 
   // Re-measure when the block's size changes (e.g. after an auto-expand that
   // settles after the initial mount, or a font load that shifts layout).
@@ -108,7 +120,7 @@ const StickyBlockToolbar = React.forwardRef(function StickyBlockToolbar_(
 
   // Measure the block relative to the portal's offset parent. Runs after every
   // render by design, the rect comparison prevents a loop.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
   React.useLayoutEffect(() => {
     const track = trackRef.current;
     if (!element || !track) {
@@ -153,7 +165,7 @@ const StickyBlockToolbar = React.forwardRef(function StickyBlockToolbar_(
             : undefined
         }
       >
-        <Sticky>
+        <Sticky onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
           <Background>
             <ToolbarMenu items={items} />
           </Background>
@@ -161,7 +173,7 @@ const StickyBlockToolbar = React.forwardRef(function StickyBlockToolbar_(
       </Track>
     </Portal>
   );
-});
+}
 
 const Track = styled.div<{ $rtl: boolean }>`
   position: absolute;

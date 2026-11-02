@@ -1,3 +1,6 @@
+// @vitest-isolate true
+import zlib from "node:zlib";
+import { errors as formidableErrors } from "formidable";
 import type Koa from "koa";
 import { DatabaseError } from "sequelize";
 import type { Mock } from "vitest";
@@ -141,6 +144,34 @@ describe("onerror", () => {
     expect(ctx.body).toContain("client_closed_request");
   });
 
+  it.each([
+    ["br", () => zlib.brotliDecompressSync(Buffer.from("not brotli"))],
+    ["gzip", () => zlib.gunzipSync(Buffer.from("not gzip"))],
+    ["gzip", () => zlib.gunzipSync(zlib.gzipSync("truncated").subarray(0, 10))],
+  ])(
+    "should convert a %s decompression error into an invalid request",
+    (_encoding, decompress) => {
+      app.context.onerror.call(ctx, captureError(decompress));
+
+      expect(requestErrorHandler).not.toHaveBeenCalled();
+      expect(ctx.status).toBe(400);
+      expect(ctx.body).toContain("invalid_request");
+    }
+  );
+
+  it("should convert an aborted multipart upload into a client closed request", () => {
+    const error = new formidableErrors.default(
+      "Request aborted",
+      formidableErrors.aborted
+    );
+
+    app.context.onerror.call(ctx, error);
+
+    expect(requestErrorHandler).not.toHaveBeenCalled();
+    expect(ctx.status).toBe(499);
+    expect(ctx.body).toContain("client_closed_request");
+  });
+
   it("should set the response status code when the response is not writable", () => {
     ctx.writable = false;
 
@@ -148,6 +179,15 @@ describe("onerror", () => {
 
     expect(ctx.res.statusCode).toBe(500);
     expect(ctx.res.end).not.toHaveBeenCalled();
+  });
+
+  it("should not throw when the response is unavailable", () => {
+    ctx.writable = false;
+    Reflect.deleteProperty(ctx, "res");
+
+    expect(() =>
+      app.context.onerror.call(ctx, InternalError("Test internal error"))
+    ).not.toThrow();
   });
 
   it("should report errors explicitly marked with isReportable: true", () => {
@@ -160,3 +200,14 @@ describe("onerror", () => {
     expect(requestErrorHandler).toHaveBeenCalledWith(error, ctx);
   });
 });
+
+function captureError(fn: () => unknown): Error {
+  try {
+    fn();
+  } catch (err) {
+    if (err instanceof Error) {
+      return err;
+    }
+  }
+  throw new Error("Expected function to throw");
+}

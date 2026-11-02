@@ -1,12 +1,24 @@
 import * as Sentry from "@sentry/react";
 import invariant from "invariant";
 import { isNil } from "es-toolkit/compat";
-import { observable, action, computed, autorun, runInAction } from "mobx";
+import {
+  action,
+  autorun,
+  computed,
+  makeObservable,
+  observable,
+  runInAction,
+} from "mobx";
 import { getCookie, setCookie } from "tiny-cookie";
 import { toError } from "@shared/utils/error";
 import type { CustomTheme } from "@shared/types";
 import Storage from "@shared/utils/Storage";
 import { getCookieDomain, parseDomain } from "@shared/utils/domains";
+import {
+  getRememberedSessions,
+  getSessionsCookieExpiry,
+  parseSessionsCookie,
+} from "@shared/utils/sessions";
 import type RootStore from "~/stores/RootStore";
 import Team from "~/models/Team";
 import env from "~/env";
@@ -42,20 +54,16 @@ export default class AuthStore extends Store<Team> {
 
   /* The ID of the user that is currently signed in. */
   @observable
-  public currentUserId?: string | null;
-
+  public currentUserId?: string | null = undefined;
   /* The ID of the team that is currently signed in. */
   @observable
-  public currentTeamId?: string | null;
-
+  public currentTeamId?: string | null = undefined;
   /* A short-lived token to be used to authenticate with the collaboration server. */
   @observable
-  public collaborationToken?: string | null;
-
+  public collaborationToken?: string | null = undefined;
   /* When set, the user will be redirected to this URL after logging out. */
   @observable
-  public logoutRedirectUri?: string;
-
+  public logoutRedirectUri?: string = undefined;
   /* A list of teams that the current user has access to. */
   @observable
   public availableTeams?: {
@@ -64,28 +72,27 @@ export default class AuthStore extends Store<Team> {
     avatarUrl: string;
     url: string;
     isSignedIn: boolean;
-  }[];
+  }[] = undefined;
 
   /* The authentication provider the user signed in with. */
   @observable
-  public lastSignedIn?: string | null;
-
+  public lastSignedIn?: string | null = undefined;
   /* Whether the user is currently suspended. */
   @observable
   public isSuspended = false;
 
   /* The email address to contact if the user is suspended. */
   @observable
-  public suspendedContactEmail?: string | null;
-
+  public suspendedContactEmail?: string | null = undefined;
   /* The auth configuration for the current domain. */
   @observable
-  public config: Config | null | undefined;
+  public config: Config | null | undefined = undefined;
 
   rootStore: RootStore;
 
   constructor(rootStore: RootStore) {
     super(rootStore, Team);
+    makeObservable(this);
 
     this.rootStore = rootStore;
 
@@ -108,7 +115,7 @@ export default class AuthStore extends Store<Team> {
     });
 
     // listen to the localstorage value changing in other tabs to react to
-    // signin/signout events in other tabs and follow suite.
+    // signin/signout events in other tabs and follow suit.
     window.addEventListener("storage", (event) => {
       if (event.key === this.name && event.newValue) {
         const newData: PersistedData | null = JSON.parse(event.newValue);
@@ -193,11 +200,12 @@ export default class AuthStore extends Store<Team> {
     };
   }
 
-  @action
   fetchConfig = async () => {
     const res = await client.post("/auth.config");
     invariant(res?.data, "Config not available");
-    this.config = res.data;
+    runInAction(() => {
+      this.config = res.data;
+    });
   };
 
   @action
@@ -210,7 +218,7 @@ export default class AuthStore extends Store<Team> {
       });
       invariant(res?.data, "Auth not available");
 
-      runInAction("AuthStore#refresh", () => {
+      runInAction(() => {
         const { data } = res;
         this.addPolicies(res.policies);
         this.add(data.team);
@@ -288,7 +296,7 @@ export default class AuthStore extends Store<Team> {
   @action
   deleteUser = async (data: { code: string }) => {
     await client.post(`/users.delete`, data);
-    runInAction("AuthStore#deleteUser", () => {
+    runInAction(() => {
       this.currentUserId = null;
       this.currentTeamId = null;
       this.collaborationToken = null;
@@ -302,7 +310,7 @@ export default class AuthStore extends Store<Team> {
   deleteTeam = async (data: { code: string }) => {
     await client.post(`/teams.delete`, data);
 
-    runInAction("AuthStore#deleteTeam", () => {
+    runInAction(() => {
       this.currentUserId = null;
       this.currentTeamId = null;
       this.availableTeams = this.availableTeams?.filter(
@@ -361,15 +369,35 @@ export default class AuthStore extends Store<Team> {
       }
     }
 
-    // remove session record on apex cookie
+    // Retain the workspace as logged out so it remains available for login.
     const team = this.team;
 
-    if (team) {
-      const sessions = JSON.parse(getCookie("sessions") || "{}");
-      delete sessions[team.id];
-      setCookie("sessions", JSON.stringify(sessions), {
+    if (
+      team &&
+      isCloudHosted &&
+      !parseDomain(window.location.hostname).custom
+    ) {
+      const sessions = getRememberedSessions(
+        parseSessionsCookie(getCookie("sessions") || "{}")
+      );
+      sessions[team.id] = {
+        name: team.name,
+        logoUrl: team.avatarUrl ?? null,
+        url: team.url,
+        expiresAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+      };
+      const expires = getSessionsCookieExpiry(sessions);
+      const options = {
         domain: getCookieDomain(window.location.hostname, isCloudHosted),
-      });
+        path: "/",
+      };
+      if (expires) {
+        setCookie("sessions", JSON.stringify(sessions), {
+          ...options,
+          expires,
+        });
+      }
     }
 
     if (

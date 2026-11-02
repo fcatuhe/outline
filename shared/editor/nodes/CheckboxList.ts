@@ -12,7 +12,7 @@ import {
   checkboxListInputRule,
   listWrappingInputRule,
 } from "../lib/listInputRule";
-import { findBlockNodes } from "../queries/findChildren";
+import { RepairPlugin } from "../plugins/RepairPlugin";
 import { CheckboxListView } from "./CheckboxListView";
 import Node from "./Node";
 
@@ -41,26 +41,14 @@ export default class CheckboxList extends Node {
     const userIdentifier = this.editor.props.userId;
 
     // Plugin to auto-assign IDs to checkbox lists
-    const assignIdsPlugin = new Plugin({
-      appendTransaction: (txs, _oldSt, newSt) => {
-        const hasDocChanges = txs.some((t) => t.docChanged);
-        if (!hasDocChanges) {
-          return null;
-        }
-
-        const checkboxLists = findBlockNodes(newSt.doc, true).filter(
-          (b) => b.node.type.name === this.name && !b.node.attrs.id
-        );
-
-        if (checkboxLists.length === 0) {
-          return null;
-        }
-
-        let modifyTx = newSt.tr;
-        checkboxLists.forEach((listBlock) => {
-          modifyTx.setNodeAttribute(listBlock.pos, "id", generateUuid());
+    const assignIdsPlugin = new RepairPlugin({
+      needsRepair: (node) => node.type.name === this.name && !node.attrs.id,
+      repair: (state, lists) => {
+        const tr = state.tr;
+        lists.forEach(({ pos }) => {
+          tr.setNodeAttribute(pos, "id", generateUuid());
         });
-        return modifyTx;
+        return tr;
       },
     });
 

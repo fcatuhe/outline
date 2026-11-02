@@ -24,15 +24,17 @@ import {
   BeforeCreate,
   IsNumeric,
 } from "sequelize-typescript";
+import slugify from "slugify";
 import { isEmail } from "validator";
 import { TeamPreferenceDefaults } from "@shared/constants";
-import type { TeamPreferences } from "@shared/types";
+import type { Plan, PlanFeature, TeamPreferences } from "@shared/types";
 import { TeamPreference, UserRole } from "@shared/types";
 import {
   getBaseDomain,
   parseDomain,
   RESERVED_SUBDOMAINS,
 } from "@shared/utils/domains";
+import { PlanHelper } from "@shared/utils/PlanHelper";
 import { attachmentRedirectRegex } from "@shared/utils/ProsemirrorHelper";
 import { parseEmail } from "@shared/utils/email";
 import { TeamValidation } from "@shared/validations";
@@ -62,6 +64,10 @@ export enum TeamFlag {
 }
 
 const avatarRedirectPattern = new RegExp(attachmentRedirectRegex.source, "i");
+
+const maxSubdomainLength = env.isCloudHosted
+  ? TeamValidation.maxSubdomainLength
+  : TeamValidation.maxSubdomainSelfHostedLength;
 
 @Scopes(() => ({
   withDomains: {
@@ -102,14 +108,8 @@ class Team extends ParanoidModel<
   @Unique
   @Length({
     min: TeamValidation.minSubdomainLength,
-    max: env.isCloudHosted
-      ? TeamValidation.maxSubdomainLength
-      : TeamValidation.maxSubdomainSelfHostedLength,
-    msg: `subdomain must be between ${TeamValidation.minSubdomainLength} and ${
-      env.isCloudHosted
-        ? TeamValidation.maxSubdomainLength
-        : TeamValidation.maxSubdomainSelfHostedLength
-    } characters`,
+    max: maxSubdomainLength,
+    msg: `subdomain must be between ${TeamValidation.minSubdomainLength} and ${maxSubdomainLength} characters`,
   })
   @Is({
     args: [/^[a-z\d-]+$/, "i"],
@@ -261,6 +261,20 @@ class Team extends ParanoidModel<
    */
   get isSuspended(): boolean {
     return !!this.suspendedAt;
+  }
+
+  /**
+   * Returns the plan that the team is on.
+   */
+  get plan(): Plan {
+    return PlanHelper.defaultPlan;
+  }
+
+  /**
+   * Returns the features that the team is entitled to use.
+   */
+  get entitlements(): PlanFeature[] {
+    return PlanHelper.getFeatures(this.plan);
   }
 
   /**
@@ -520,15 +534,15 @@ class Team extends ParanoidModel<
   static async savePreviousSubdomain(model: Team) {
     const previousSubdomain = model.previous("subdomain");
     if (previousSubdomain && previousSubdomain !== model.subdomain) {
-      model.previousSubdomains = model.previousSubdomains || [];
+      const previousSubdomains = model.previousSubdomains || [];
 
-      if (!model.previousSubdomains.includes(previousSubdomain)) {
-        // Add the previous subdomain to the list of previous subdomains
-        // upto a maximum of 3 previous subdomains
-        model.previousSubdomains.push(previousSubdomain);
-        if (model.previousSubdomains.length > 3) {
-          model.previousSubdomains.shift();
-        }
+      if (!previousSubdomains.includes(previousSubdomain)) {
+        // Assign a new array, Sequelize does not detect in-place mutation.
+        // Keep up to a maximum of 3 previous subdomains.
+        model.previousSubdomains = [
+          ...previousSubdomains,
+          previousSubdomain,
+        ].slice(-3);
       }
     }
 
@@ -596,6 +610,52 @@ class Team extends ParanoidModel<
         },
       })) || (await this.findByPreviousSubdomain(subdomain))
     );
+  }
+
+  /**
+   * Find a subdomain that is not yet in use, derived from the requested value.
+   * A trailing top-level domain is removed and the remainder is slugified,
+   * a numeric suffix is appended until a free subdomain is found. The result
+   * is truncated to fit the maximum subdomain length.
+   *
+   * @param requested - The preferred subdomain or team name.
+   * @param options - Additional find options to pass to the query.
+   * @returns An available subdomain.
+   */
+  static async findAvailableSubdomain(
+    requested: string,
+    options?: FindOptions<Team>
+  ) {
+    // strip a trailing top-level domain so "acme.com" becomes "acme"
+    const withoutTld = requested.replace(/\s*\.[a-z]{2,}\s*$/i, "");
+
+    // filter subdomain to only valid characters
+    // if there are less than the minimum length, use a default subdomain
+    const normalized = slugify(withoutTld, { lower: true, strict: true });
+    const base =
+      normalized.length < 3 || RESERVED_SUBDOMAINS.includes(normalized)
+        ? "team"
+        : normalized;
+
+    const withSuffix = (suffix: string) =>
+      `${base.slice(0, maxSubdomainLength - suffix.length).replace(/-+$/, "")}${suffix}`;
+
+    let subdomain = withSuffix("");
+    let append = 0;
+
+    for (;;) {
+      const existing = await this.findOne({
+        ...options,
+        where: { subdomain },
+        paranoid: false,
+      });
+
+      if (!existing) {
+        return subdomain;
+      }
+
+      subdomain = withSuffix(String(++append));
+    }
   }
 
   /**

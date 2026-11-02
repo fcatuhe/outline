@@ -11,6 +11,7 @@ import Extension from "@shared/editor/lib/Extension";
 import { codeLanguages } from "@shared/editor/lib/code";
 import isMarkdown from "@shared/editor/lib/isMarkdown";
 import normalizePastedMarkdown from "@shared/editor/lib/markdown/normalize";
+import { documentMentionAttrs } from "@shared/editor/lib/mention";
 import { isRemoteTransaction } from "@shared/editor/lib/multiplayer";
 import { recreateTransform } from "@shared/editor/lib/prosemirror-recreate-transform";
 import { isInCode } from "@shared/editor/queries/isInCode";
@@ -21,6 +22,7 @@ import { determineIconType } from "@shared/utils/icon";
 import parseCollectionSlug from "@shared/utils/parseCollectionSlug";
 import parseDocumentSlug from "@shared/utils/parseDocumentSlug";
 import { isCollectionUrl, isDocumentUrl, isUrl } from "@shared/utils/urls";
+import { ProsemirrorHelper } from "~/models/helpers/ProsemirrorHelper";
 import stores from "~/stores";
 import { PasteMenu } from "../components/PasteMenu";
 
@@ -98,14 +100,14 @@ export default class PasteHandler extends Extension {
 
             if (!this.shiftKey) {
               // If the HTML on the clipboard is from Prosemirror then the best
-              // compatability is to just use the HTML parser, regardless of
+              // compatibility is to just use the HTML parser, regardless of
               // whether it "looks" like Markdown, see: outline/outline#2416
               if (html?.includes("data-pm-slice")) {
                 return false;
               }
 
               // If the HTML on the clipboard is from Claude then the best
-              // compatability is to just use the HTML parser.
+              // compatibility is to just use the HTML parser.
               if (html?.includes("font-claude-response-body")) {
                 return false;
               }
@@ -138,10 +140,23 @@ export default class PasteHandler extends Extension {
                           return;
                         }
                         if (document) {
-                          if (state.schema.nodes.mention) {
-                            const { hash } = new URL(trimmedText);
-                            const trimmedHash = hash.substring(1);
+                          const { hash } = new URL(trimmedText);
+                          const pastedAnchorId = hash.substring(1) || undefined;
+                          const heading =
+                            pastedAnchorId && document.data
+                              ? ProsemirrorHelper.getHeadingTitle(
+                                  document,
+                                  pastedAnchorId
+                                )
+                              : undefined;
+                          const { label, anchorId } = documentMentionAttrs({
+                            title: document.displayTitle,
+                            heading,
+                            anchorId: pastedAnchorId,
+                            sameDocument: document.id === this.editor.props.id,
+                          });
 
+                          if (state.schema.nodes.mention) {
                             view.dispatch(
                               view.state.tr.replaceWith(
                                 state.selection.from,
@@ -149,23 +164,18 @@ export default class PasteHandler extends Extension {
                                 state.schema.nodes.mention.create({
                                   type: MentionType.Document,
                                   modelId: document.id,
-                                  label: document.titleWithDefault,
+                                  label,
                                   id: uuidv4(),
-                                  anchorId: trimmedHash.length
-                                    ? trimmedHash
-                                    : undefined,
+                                  anchorId,
                                 })
                               )
                             );
                           } else {
-                            const { hash } = new URL(trimmedText);
                             const hasEmoji =
                               determineIconType(document.icon) ===
                               IconType.Emoji;
 
-                            const title = `${hasEmoji ? document.icon + " " : ""}${
-                              document.titleWithDefault
-                            }`;
+                            const title = `${hasEmoji ? document.icon + " " : ""}${label}`;
 
                             this.insertLink(`${document.path}${hash}`, title);
                           }
@@ -197,7 +207,7 @@ export default class PasteHandler extends Extension {
                                 state.schema.nodes.mention.create({
                                   type: MentionType.Collection,
                                   modelId: collection.id,
-                                  label: collection.name,
+                                  label: collection.displayName,
                                   id: uuidv4(),
                                 })
                               )
@@ -209,7 +219,7 @@ export default class PasteHandler extends Extension {
                               IconType.Emoji;
 
                             const title = `${hasEmoji ? collection.icon + " " : ""}${
-                              collection.name
+                              collection.displayName
                             }`;
 
                             this.insertLink(`${collection.path}${hash}`, title);
@@ -251,19 +261,17 @@ export default class PasteHandler extends Extension {
 
                 if (supportsCodeMark) {
                   event.preventDefault();
-                  view.dispatch(
-                    state.tr
-                      .insertText(
-                        text,
-                        state.selection.from,
-                        state.selection.to
-                      )
-                      .addMark(
-                        state.selection.from,
-                        state.selection.to + text.length,
-                        state.schema.marks.code_inline.create()
-                      )
-                  );
+                  const { from, to } = state.selection;
+                  const tr = state.tr.insertText(text, from, to);
+                  if (text.length > 0) {
+                    // The inserted text now spans from the selection start
+                    tr.addMark(
+                      from,
+                      from + text.length,
+                      state.schema.marks.code_inline.create()
+                    );
+                  }
+                  view.dispatch(tr);
                   return true;
                 }
               }

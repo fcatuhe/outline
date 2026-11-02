@@ -1,5 +1,5 @@
 import type { DocumentPreferences, TextEditMode } from "@shared/types";
-import { DocumentConflictError } from "@server/errors";
+import { DocumentConflictError, ValidationError } from "@server/errors";
 import { Event, Document } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { TextHelper } from "@server/models/helpers/TextHelper";
@@ -38,6 +38,8 @@ type Props = {
   publish?: boolean;
   /** The ID of the collection to publish the document to */
   collectionId?: string | null;
+  /** The reason the document is archived or deleted. */
+  deprecatedReason?: string | null;
 };
 
 /**
@@ -65,6 +67,7 @@ export default async function documentUpdater(
     lastRevision,
     publish,
     collectionId,
+    deprecatedReason,
     done,
   }: Props
 ): Promise<Document> {
@@ -72,32 +75,20 @@ export default async function documentUpdater(
   const { transaction } = ctx.state;
   const cId = collectionId || document.collectionId;
 
-  if (title !== undefined) {
-    document.title = title.trim();
-  }
-  if (icon !== undefined) {
-    document.icon = icon;
-  }
-  if (color !== undefined) {
-    document.color = color;
-  }
-  if (editorVersion) {
-    document.editorVersion = editorVersion;
-  }
-  if (templateId) {
-    document.templateId = templateId;
-  }
-  if (fullWidth !== undefined) {
-    document.fullWidth = fullWidth;
-  }
+  document.fill({
+    title: title?.trim(),
+    icon,
+    color,
+    editorVersion: editorVersion || undefined,
+    templateId: templateId || undefined,
+    fullWidth,
+    insightsEnabled,
+  });
   if (preferences) {
     document.preferences = {
       ...document.preferences,
       ...preferences,
     };
-  }
-  if (insightsEnabled !== undefined) {
-    document.insightsEnabled = insightsEnabled;
   }
   if (text !== undefined) {
     document = DocumentHelper.applyMarkdownToDocument(
@@ -106,7 +97,8 @@ export default async function documentUpdater(
         base64Only: true,
       }),
       editMode,
-      findText
+      findText,
+      user.id
     );
   }
 
@@ -131,8 +123,23 @@ export default async function documentUpdater(
     }
   }
 
+  if (deprecatedReason !== undefined) {
+    // Reload under the lock so a concurrent restore cannot leave a stale note.
+    await document.reload({ transaction, paranoid: false });
+    if (document.isActive) {
+      throw ValidationError("The document must be archived or deleted");
+    }
+    document.deprecatedReason = deprecatedReason?.trim() || null;
+    // Keep the archive attribution and time shown in the banner unchanged.
+    if (document.changed("deprecatedReason")) {
+      await document.saveWithCtx(ctx, { silent: true });
+    }
+    return document;
+  }
+
   const changed = document.changed();
   const eventData = done !== undefined ? { done } : undefined;
+  const { collection } = document;
 
   const event = {
     name: "documents.update",
@@ -158,9 +165,16 @@ export default async function documentUpdater(
     });
   }
 
-  return await Document.findByPk(document.id, {
-    userId: user.id,
-    rejectOnEmpty: true,
-    transaction,
-  });
+  // Publishing can move the document to another collection, and the save
+  // hooks can attach a collection that has no membership data. Reload in
+  // those cases so that policies stay accurate.
+  if (publish || document.collection !== collection) {
+    return await Document.findByPk(document.id, {
+      userId: user.id,
+      rejectOnEmpty: true,
+      transaction,
+    });
+  }
+
+  return document;
 }

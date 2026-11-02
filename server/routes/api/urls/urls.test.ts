@@ -1,6 +1,8 @@
+// @vitest-isolate true
 import type { Mock } from "vitest";
 import { randomString } from "@shared/random";
 import { UnfurlResourceType } from "@shared/types";
+import { Hour } from "@shared/utils/time";
 import { createContext } from "@server/context";
 import env from "@server/env";
 import type { User } from "@server/models";
@@ -10,9 +12,12 @@ import {
   buildDocument,
   buildShare,
   buildTeam,
+  buildGuestUser,
   buildUser,
 } from "@server/test/factories";
+import Redis from "@server/storage/redis";
 import { getTestServer } from "@server/test/support";
+import { RedisPrefixHelper } from "@server/utils/RedisPrefixHelper";
 import Iframely from "plugins/iframely/server/iframely";
 
 const resolveCname = vi.hoisted(
@@ -225,7 +230,7 @@ describe("#urls.unfurl", () => {
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.type).toEqual(UnfurlResourceType.Document);
-    expect(body.title).toEqual(document.titleWithDefault);
+    expect(body.title).toEqual(document.displayTitle);
     expect(body.id).toEqual(document.id);
   });
 
@@ -347,7 +352,25 @@ Install instructions here.`
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.type).toEqual(UnfurlResourceType.Document);
-    expect(body.title).toEqual(document.titleWithDefault);
+    expect(body.title).toEqual(document.displayTitle);
+    expect(body.id).toEqual(document.id);
+  });
+
+  it("should succeed with status 200 ok when share url of another team is supplied", async () => {
+    const document = await buildDocument();
+    const share = await buildShare({
+      teamId: document.teamId,
+      documentId: document.id,
+      published: true,
+    });
+
+    const res = await server.post("/api/urls.unfurl", user, {
+      body: {
+        url: `${env.URL}/s/${share.id}/doc/${document.urlId}`,
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
     expect(body.id).toEqual(document.id);
   });
 
@@ -371,7 +394,7 @@ Install instructions here.`
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.type).toEqual(UnfurlResourceType.Document);
-    expect(body.title).toEqual(document.titleWithDefault);
+    expect(body.title).toEqual(document.displayTitle);
     expect(body.id).toEqual(document.id);
   });
 
@@ -394,7 +417,7 @@ Install instructions here.`
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.type).toEqual(UnfurlResourceType.Document);
-    expect(body.title).toEqual(document.titleWithDefault);
+    expect(body.title).toEqual(document.displayTitle);
     expect(body.id).toEqual(document.id);
   });
 
@@ -441,6 +464,26 @@ Install instructions here.`
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.url).toContain(`/s/${share.id}/doc/`);
+  });
+
+  it("should return 404 for share url with an invalid document slug", async () => {
+    const document = await buildDocument({
+      teamId: user.teamId,
+    });
+    const share = await buildShare({
+      teamId: user.teamId,
+      userId: user.id,
+      documentId: document.id,
+      includeChildDocuments: true,
+      published: true,
+    });
+
+    const res = await server.post("/api/urls.unfurl", user, {
+      body: {
+        url: `${env.URL}/s/${share.id}/doc/invalid`,
+      },
+    });
+    expect(res.status).toEqual(404);
   });
 
   it("should return 204 for collection share url without document", async () => {
@@ -517,6 +560,22 @@ Install instructions here.`
     );
   });
 
+  it("should not unfurl external urls for guests", async () => {
+    const guest = await buildGuestUser({ teamId: user.teamId });
+    const callCount = (Iframely.requestResource as Mock).mock.calls.length;
+
+    const res = await server.post("/api/urls.unfurl", guest, {
+      body: {
+        url: "https://github.com/acme/private/issues/1",
+      },
+    });
+
+    expect(res.status).toEqual(204);
+    expect((Iframely.requestResource as Mock).mock.calls.length).toEqual(
+      callCount
+    );
+  });
+
   it("should succeed with status 204 no content for a non-existing external url", async () => {
     (Iframely.requestResource as Mock).mockResolvedValue(
       Promise.resolve({
@@ -533,6 +592,43 @@ Install instructions here.`
     });
 
     expect(res.status).toEqual(204);
+  });
+
+  it("should cache a permanent external url error for a day", async () => {
+    (Iframely.requestResource as Mock).mockResolvedValue({
+      status: 403,
+      error: "Iframely could not fetch the given URL.",
+    });
+    const url = `https://${randomString(8)}.example.com`;
+
+    const res = await server.post("/api/urls.unfurl", user, {
+      body: { url },
+    });
+
+    expect(res.status).toEqual(204);
+    const ttl = await Redis.defaultClient.ttl(
+      RedisPrefixHelper.getUnfurlKey(user.teamId, user.id, url)
+    );
+    expect(ttl).toBeGreaterThan(Hour.seconds);
+  });
+
+  it("should cache a transient external url error for a minute", async () => {
+    (Iframely.requestResource as Mock).mockResolvedValue({
+      status: 418,
+      error: "Iframely timed out fetching the given URL.",
+    });
+    const url = `https://${randomString(8)}.example.com`;
+
+    const res = await server.post("/api/urls.unfurl", user, {
+      body: { url },
+    });
+
+    expect(res.status).toEqual(204);
+    const ttl = await Redis.defaultClient.ttl(
+      RedisPrefixHelper.getUnfurlKey(user.teamId, user.id, url)
+    );
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(60);
   });
 });
 
